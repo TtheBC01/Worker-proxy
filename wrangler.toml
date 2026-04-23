@@ -1,0 +1,8 @@
+name = "worker-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-04-22"
+
+# For local development only. In production, set ANKR_API_KEY via
+# Cloudflare Worker secret or via CI (see .github/workflows/deploy.yml).
+[vars]
+ANKR_API_BASE = "https://rpc.ankr.com/multichain"
