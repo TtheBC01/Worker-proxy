@@ -12,7 +12,7 @@ interface JsonRpcPayload {
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,OPTIONS",
+  "access-control-allow-methods": "GET,POST,OPTIONS",
   "access-control-allow-headers": "content-type"
 };
 
@@ -22,9 +22,9 @@ export default {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    if (request.method !== "GET") {
+    if (request.method !== "GET" && request.method !== "POST") {
       return withCors(
-        Response.json({ error: "Only GET requests are supported." }, { status: 405 })
+        Response.json({ error: "Only GET and POST requests are supported." }, { status: 405 })
       );
     }
 
@@ -37,16 +37,19 @@ export default {
       );
     }
 
-    const inputUrl = new URL(request.url);
-    const method = inputUrl.searchParams.get("method") ?? "ankr_getAccountBalance";
-    const id = inputUrl.searchParams.get("id") ?? 1;
-    const forwardMethod = (inputUrl.searchParams.get("forwardMethod") ?? "POST").toUpperCase();
+    const input = await readInput(request);
+    if (input.error) {
+      return withCors(Response.json({ error: input.error }, { status: 400 }));
+    }
 
-    const params = readParams(inputUrl.searchParams);
+    const method = input.method ?? "ankr_getAccountBalance";
+    const id = input.id ?? 1;
+    const forwardMethod = (input.forwardMethod ?? "POST").toUpperCase();
+    const params = input.params;
     if (!params.walletAddress) {
       return withCors(
         Response.json(
-          { error: "Missing walletAddress query parameter." },
+          { error: "Missing walletAddress in query params or JSON body." },
           { status: 400 }
         )
       );
@@ -143,6 +146,69 @@ function readParams(searchParams: URLSearchParams): Record<string, unknown> {
   };
 }
 
+interface ParsedInput {
+  method?: string;
+  id?: string | number;
+  forwardMethod?: string;
+  params: Record<string, unknown>;
+  error?: string;
+}
+
+async function readInput(request: Request): Promise<ParsedInput> {
+  const url = new URL(request.url);
+  if (request.method === "GET") {
+    return {
+      method: url.searchParams.get("method") ?? undefined,
+      id: url.searchParams.get("id") ?? undefined,
+      forwardMethod: url.searchParams.get("forwardMethod") ?? undefined,
+      params: readParams(url.searchParams)
+    };
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return {
+      params: {},
+      error: "POST body must be valid JSON."
+    };
+  }
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return {
+      params: {},
+      error: "POST body must be a JSON object."
+    };
+  }
+
+  const input = body as Record<string, unknown>;
+  const paramsFromBody = readBodyParams(input);
+  return {
+    method: readOptionalString(input.method),
+    id: readOptionalId(input.id),
+    forwardMethod: readOptionalString(input.forwardMethod),
+    params: paramsFromBody
+  };
+}
+
+function readBodyParams(input: Record<string, unknown>): Record<string, unknown> {
+  const explicitParams = input.params;
+  if (explicitParams && typeof explicitParams === "object" && !Array.isArray(explicitParams)) {
+    return explicitParams as Record<string, unknown>;
+  }
+
+  const blockchain = normalizeBlockchain(input.blockchain);
+  return {
+    blockchain: blockchain.length ? blockchain : ["eth"],
+    nativeFirst: readBooleanFromUnknown(input.nativeFirst, true),
+    onlyWhitelisted: readBooleanFromUnknown(input.onlyWhitelisted, true),
+    pageSize: readNumberFromUnknown(input.pageSize, 10),
+    pageToken: readOptionalString(input.pageToken),
+    walletAddress: readOptionalString(input.walletAddress)
+  };
+}
+
 function readBoolean(value: string | null, fallback: boolean): boolean {
   if (value == null) {
     return fallback;
@@ -156,6 +222,48 @@ function readNumber(value: string | null, fallback: number): number {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function readOptionalId(value: unknown): string | number | undefined {
+  if (typeof value === "string" || typeof value === "number") {
+    return value;
+  }
+  return undefined;
+}
+
+function readBooleanFromUnknown(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+  }
+  return fallback;
+}
+
+function readNumberFromUnknown(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function normalizeBlockchain(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function withCors(response: Response): Response {

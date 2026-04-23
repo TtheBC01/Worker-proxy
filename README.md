@@ -1,13 +1,15 @@
 # Worker-proxy
 
-A minimal Cloudflare Worker that accepts GET query params and rewrites them into a JSON-RPC request for Ankr:
+A minimal Cloudflare Worker that accepts GET query params or POST JSON body params and rewrites them into a JSON-RPC request for Ankr:
 
 - Destination base URL: `https://rpc.ankr.com/multichain/[apikey]`
 - API key source: Worker secret `ANKR_API_KEY` (populated from GitHub repo secret in CI)
 
 ## How it works
 
-1. You call the Worker with a GET request and query params.
+1. You call the Worker with either:
+   - a GET request with query params, or
+   - a POST request with a JSON body.
 2. The Worker builds a JSON-RPC payload (default `ankr_getAccountBalance`).
 3. The Worker forwards to `https://rpc.ankr.com/multichain/${ANKR_API_KEY}`.
 4. The Worker returns the upstream response (with permissive CORS headers).
@@ -25,17 +27,69 @@ A minimal Cloudflare Worker that accepts GET query params and rewrites them into
 - `forwardMethod` (`POST` default, or `GET`)
 - `params` (optional raw JSON object string; if present, overrides field-based params)
 
+## POST JSON body fields
+
+- `walletAddress` (required unless `params` is provided)
+- `blockchain` (array or comma-separated string; default `["eth"]`)
+- `nativeFirst` (default `true`)
+- `onlyWhitelisted` (default `true`)
+- `pageSize` (default `10`)
+- `pageToken` (optional)
+- `method` (default `ankr_getAccountBalance`)
+- `id` (default `1`)
+- `forwardMethod` (`POST` default, or `GET`)
+- `params` (optional JSON object; if present, overrides field-based params)
+
 ## Example request to Worker
+
+### Deployed (`*.workers.dev`)
 
 ```bash
 curl --request GET \
   --url 'https://<your-worker>.workers.dev/?method=ankr_getAccountBalance&blockchain=eth&nativeFirst=true&onlyWhitelisted=true&pageSize=10&pageToken=1&walletAddress=0xE936e8FAf4A5655469182A49a505055B71C17604'
 ```
 
-That becomes this upstream JSON-RPC POST body by default:
+### Local (`wrangler dev`)
 
-```json
-{
+After `npm run dev`, Wrangler usually serves at `http://127.0.0.1:8787` (check the terminal output if yours differs):
+
+```bash
+curl --request GET \
+  --url 'http://127.0.0.1:8787/?method=ankr_getAccountBalance&blockchain=eth&nativeFirst=true&onlyWhitelisted=true&pageSize=10&pageToken=1&walletAddress=0xE936e8FAf4A5655469182A49a505055B71C17604'
+```
+
+Use a `.dev.vars` file with `ANKR_API_KEY=...` so the Worker can call Ankr locally.
+
+### POST request to Worker (JSON body params)
+
+```bash
+curl --request POST \
+  --url 'http://127.0.0.1:8787/' \
+  --header 'accept: application/json' \
+  --header 'content-type: application/json' \
+  --data '{
+  "method": "ankr_getAccountBalance",
+  "id": 1,
+  "forwardMethod": "POST",
+  "blockchain": ["eth"],
+  "nativeFirst": true,
+  "onlyWhitelisted": true,
+  "pageSize": 10,
+  "pageToken": "1",
+  "walletAddress": "0xE936e8FAf4A5655469182A49a505055B71C17604"
+}'
+```
+
+### Direct call to Ankr (same JSON-RPC the Worker sends)
+
+Without the proxy, the equivalent request is a POST to `https://rpc.ankr.com/multichain/<your-api-key>`:
+
+```bash
+curl --request POST \
+  --url 'https://rpc.ankr.com/multichain/<your-api-key>' \
+  --header 'accept: application/json' \
+  --header 'content-type: application/json' \
+  --data '{
   "jsonrpc": "2.0",
   "method": "ankr_getAccountBalance",
   "params": {
@@ -47,8 +101,10 @@ That becomes this upstream JSON-RPC POST body by default:
     "walletAddress": "0xE936e8FAf4A5655469182A49a505055B71C17604"
   },
   "id": 1
-}
+}'
 ```
+
+The GET examples above build this same JSON-RPC payload (default `forwardMethod=POST`).
 
 ## Local development
 
